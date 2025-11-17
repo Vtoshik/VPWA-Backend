@@ -1,5 +1,5 @@
 import type { HttpContext } from '@adonisjs/core/http'
-import transmit from '@adonisjs/transmit/services/main'
+import { getSocketIO } from '#services/socket_provider'
 import { DateTime } from 'luxon'
 import Message from '#models/message'
 import Channel from '#models/channel'
@@ -36,10 +36,8 @@ export default class ChatsController {
     channel.lastActivity = DateTime.now()
     await channel.save()
 
-    transmit.broadcast(`channels/${channelId}`, {
-      type: 'message',
-      data: message.serialize(),
-    })
+    const socketIO = getSocketIO()
+    socketIO.broadcastMessage(channelId, message.serialize())
 
     return response.ok({ message: message.serialize() })
   }
