@@ -1,7 +1,7 @@
 import { Server as SocketIOServer } from 'socket.io'
 import type { Server as HttpServer } from 'http'
 import User from '#models/user'
-import db from '@adonisjs/lucid/services/db'
+import { createHash } from 'node:crypto'
 
 export default class SocketService {
   private io: SocketIOServer
@@ -28,14 +28,42 @@ export default class SocketService {
           return next(new Error('Authentication token required'))
         }
 
-        // Find token in database - token format: "oat_hash"
-        const tokenHash = token.replace('oat_', '')
+        // Token format: "oat_<base64_token_id>.<secret>"
+        // Extract token ID and secret
+        const parts = token.split('.')
+        if (parts.length !== 2 || !parts[0].startsWith('oat_')) {
+          return next(new Error('Invalid token format'))
+        }
+
+        const encodedTokenId = parts[0].replace('oat_', '')
+        const encodedSecret = parts[1]
+
+        // Decode base64 token ID to get the actual numeric ID
+        const tokenId = parseInt(Buffer.from(encodedTokenId, 'base64').toString('utf-8'), 10)
+
+        if (isNaN(tokenId)) {
+          return next(new Error('Invalid token ID'))
+        }
+
+        // Decode base64 secret to get the actual secret
+        const secret = Buffer.from(encodedSecret, 'base64').toString('utf-8')
+
+        // Find token in database by token ID
+        const { default: db } = await import('@adonisjs/lucid/services/db')
         const accessTokenRecord = await db
           .from('auth_access_tokens')
-          .where('hash', tokenHash)
+          .where('id', tokenId)
           .first()
 
         if (!accessTokenRecord) {
+          return next(new Error('Token not found'))
+        }
+
+        // Verify the secret matches the stored hash
+        // AdonisJS uses SHA256 for access tokens, not bcrypt
+        const secretHash = createHash('sha256').update(secret).digest('hex')
+
+        if (secretHash !== accessTokenRecord.hash) {
           return next(new Error('Invalid authentication token'))
         }
 
@@ -163,7 +191,8 @@ export default class SocketService {
   }
 
   broadcastMessage(channelId: number, message: any) {
-    this.io.to(`channel:${channelId}`).emit('message:new', message)
+    // Emit to everyone in the channel, including the sender
+    this.io.in(`channel:${channelId}`).emit('message:new', message)
   }
 
   broadcastChannelCreated(channel: any, members: number[]) {

@@ -27,9 +27,11 @@ router.group(() => {
   .prefix('/api')
   .use(middleware.auth())
 
+// Channel commands
 router.group(() => {
   router.get('/channels', [ChannelsController, 'index'])
   router.post('/channels', [ChannelsController, 'create'])
+  router.post('/channels/join', [ChannelsController, 'join'])
   router.delete('/channels/:id', [ChannelsController, 'destroy'])
   router.post('/channels/:id/invite', [ChannelsController, 'invite'])
   router.post('/channels/:id/kick', [ChannelsController, 'kick'])
