@@ -1,6 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import UserChannel from '#models/user_channel'
 import Channel from '#models/channel'
+import User from '#models/user'
 import { getSocketIO } from '#services/socket_provider'
 import { DateTime } from 'luxon'
 import Invite from '#models/invite'
@@ -47,7 +48,6 @@ export default class ChannelsController {
                 joinedAt: DateTime.now(),
             })
 
-            // Broadcast with Socket.IO
             const socketIO = getSocketIO()
             socketIO.broadcastChannelCreated(channel.serialize(), [user.id])
 
@@ -55,6 +55,98 @@ export default class ChannelsController {
         } catch(err) {
             console.log(err)
             return response.internalServerError({ message: 'Failed to create channel' })
+        }
+    }
+
+    async join({ request, auth, response }: HttpContext){
+        const user = auth.user!
+        const { channelName, name, isPrivate } = request.only(['channelName', 'name', 'isPrivate'])
+
+        // Support both 'channelName' and 'name' parameters
+        const finalChannelName = channelName || name
+
+        if (!finalChannelName) {
+            return response.badRequest({ message: 'Channel name is required' })
+        }
+
+        try {
+            let channel = await Channel.query().where('name', finalChannelName).first()
+
+            if (!channel) {
+                channel = await Channel.create({
+                    name: finalChannelName,
+                    adminId: user.id,
+                    isPrivate: isPrivate || false,
+                    lastActivity: DateTime.now(),
+                })
+
+                await UserChannel.create({
+                    userId: user.id,
+                    channelId: channel.id,
+                    isSelected: true,
+                    joinedAt: DateTime.now(),
+                })
+
+                const socketIO = getSocketIO()
+                socketIO.broadcastChannelCreated(channel.serialize(), [user.id])
+
+                return response.created({
+                    channel: channel.serialize(),
+                    message: 'Channel created and joined'
+                })
+            }
+
+            if (channel.isPrivate) {
+                return response.forbidden({
+                    message: 'Cannot join private channel without invitation'
+                })
+            }
+
+            const ban = await Ban.query()
+                .where('user_id', user.id)
+                .where('channel_id', channel.id)
+                .where('is_permanent', true)
+                .first()
+
+            if (ban) {
+                return response.forbidden({ message: 'You are banned from this channel' })
+            }
+
+            const existingMember = await UserChannel.query()
+                .where('user_id', user.id)
+                .where('channel_id', channel.id)
+                .first()
+
+            if (existingMember) {
+                return response.conflict({ message: 'Already a member of this channel' })
+            }
+
+            await UserChannel.create({
+                userId: user.id,
+                channelId: channel.id,
+                isSelected: true,
+                joinedAt: DateTime.now(),
+            })
+
+            channel.lastActivity = DateTime.now()
+            await channel.save()
+
+            const socketIO = getSocketIO()
+            socketIO.getIO().to(`channel:${channel.id}`).emit('user:joined-channel', {
+                userId: user.id,
+                nickname: user.nickname,
+                channelId: channel.id,
+                channelName: channel.name,
+            })
+
+            return response.ok({
+                channel: channel.serialize(),
+                message: 'Joined channel successfully'
+            })
+
+        } catch(err) {
+            console.log(err)
+            return response.internalServerError({ message: 'Failed to join channel' })
         }
     }
 
@@ -161,7 +253,7 @@ export default class ChannelsController {
     async invite({ request, params, auth, response }: HttpContext){
         const user = auth.user!
         const channelId = params.id
-        const { userId } = request.only(['userId'])
+        const { userId, nickname } = request.only(['userId', 'nickname'])
 
         try {
             const channel = await Channel.find(channelId)
@@ -173,8 +265,23 @@ export default class ChannelsController {
                 return response.forbidden({ message: 'Only admin can invite to private channel' })
             }
 
+            // Support both userId and nickname
+            let targetUserId = userId
+
+            if (!targetUserId && nickname) {
+                const targetUser = await User.query().where('nickname', nickname).first()
+                if (!targetUser) {
+                    return response.notFound({ message: 'User not found' })
+                }
+                targetUserId = targetUser.id
+            }
+
+            if (!targetUserId) {
+                return response.badRequest({ message: 'Either userId or nickname is required' })
+            }
+
             const existingMember = await UserChannel.query()
-                .where('user_id', userId)
+                .where('user_id', targetUserId)
                 .where('channel_id', channelId)
                 .first()
 
@@ -182,15 +289,28 @@ export default class ChannelsController {
                 return response.conflict({ message: 'User already member' })
             }
 
+            // Check if there's already a pending invite for this user to this channel
+            const existingInvite = await Invite.query()
+                .where('to_user_id', targetUserId)
+                .where('channel_id', channelId)
+                .where('status', 'pending')
+                .first()
+
+            if (existingInvite) {
+                return response.conflict({
+                    message: 'User already has a pending invite to this channel'
+                })
+            }
+
             const invite = await Invite.create({
                 fromUserId: user.id,
-                toUserId: userId,
+                toUserId: targetUserId,
                 channelId,
                 status: 'pending'
             })
 
             const socketIO = getSocketIO()
-            socketIO.sendInvite(userId, {
+            socketIO.sendInvite(targetUserId, {
                 inviteId: invite.id,
                 channelId,
                 channelName: channel.name,
@@ -207,7 +327,7 @@ export default class ChannelsController {
     async kick({ request, params, auth, response }: HttpContext){
         const user = auth.user!
         const channelId = params.id
-        const { userId } = request.only(['userId'])
+        const { userId, nickname } = request.only(['userId', 'nickname'])
 
         try {
             const channel = await Channel.find(channelId)
@@ -215,14 +335,29 @@ export default class ChannelsController {
                 return response.notFound({ message: 'Channel not found' })
             }
 
+            // Support both userId and nickname
+            let targetUserId = userId
+
+            if (!targetUserId && nickname) {
+                const targetUser = await User.query().where('nickname', nickname).first()
+                if (!targetUser) {
+                    return response.notFound({ message: 'User not found' })
+                }
+                targetUserId = targetUser.id
+            }
+
+            if (!targetUserId) {
+                return response.badRequest({ message: 'Either userId or nickname is required' })
+            }
+
             if (user.id === channel.adminId) {
                 await UserChannel.query()
-                    .where('user_id', userId)
+                    .where('user_id', targetUserId)
                     .where('channel_id', channelId)
                     .delete()
 
                 await Ban.create({
-                    userId,
+                    userId: targetUserId,
                     channelId,
                     bannedBy: [user.id],
                     isPermanent: true,
@@ -230,7 +365,7 @@ export default class ChannelsController {
                 })
 
                 const socketIO = getSocketIO()
-                socketIO.notifyKick(userId, {
+                socketIO.notifyKick(targetUserId, {
                     channelId,
                     channelName: channel.name,
                     kickedBy: user.nickname
@@ -240,13 +375,13 @@ export default class ChannelsController {
             }
 
             let ban = await Ban.query()
-                .where('user_id', userId)
+                .where('user_id', targetUserId)
                 .where('channel_id', channelId)
                 .first()
 
             if (!ban) {
                 ban = await Ban.create({
-                    userId,
+                    userId: targetUserId,
                     channelId,
                     bannedBy: [user.id],
                     isPermanent: false,
@@ -261,7 +396,7 @@ export default class ChannelsController {
 
                 if (ban.bannedBy.length >= 3) {
                     await UserChannel.query()
-                        .where('user_id', userId)
+                        .where('user_id', targetUserId)
                         .where('channel_id', channelId)
                         .delete()
 
@@ -269,7 +404,7 @@ export default class ChannelsController {
                     await ban.save()
 
                     const socketIO = getSocketIO()
-                    socketIO.notifyKick(userId, {
+                    socketIO.notifyKick(targetUserId, {
                         channelId,
                         channelName: channel.name,
                         kickedBy: 'Community vote',
