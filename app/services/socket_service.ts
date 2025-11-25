@@ -2,10 +2,12 @@ import { Server as SocketIOServer } from 'socket.io'
 import type { Server as HttpServer } from 'http'
 import User from '#models/user'
 import { createHash } from 'node:crypto'
+import ChannelCleanupService from './channel_cleanup_service.js'
 
 export default class SocketService {
   private io: SocketIOServer
   private userSockets: Map<number, string> = new Map()
+  private cleanupService: ChannelCleanupService
 
   constructor(httpServer: HttpServer) {
     this.io = new SocketIOServer(httpServer, {
@@ -17,6 +19,10 @@ export default class SocketService {
 
     this.setupMiddleware()
     this.setupEventHandlers()
+
+    // Start channel cleanup service
+    this.cleanupService = new ChannelCleanupService()
+    this.cleanupService.start()
   }
 
   private setupMiddleware() {
@@ -232,5 +238,20 @@ export default class SocketService {
 
   getIO(): SocketIOServer {
     return this.io
+  }
+
+  /**
+   * Get the cleanup service instance
+   */
+  getCleanupService(): ChannelCleanupService {
+    return this.cleanupService
+  }
+
+  /**
+   * Stop the socket service and cleanup service
+   */
+  stop() {
+    this.cleanupService.stop()
+    this.io.close()
   }
 }
