@@ -4,6 +4,7 @@ import { middleware } from '#start/kernel'
 const ChatsController = () => import('#controllers/chats_controller')
 const AuthController = () => import('#controllers/auth_controller')
 const ChannelsController = () => import('#controllers/channels_controller')
+const InvitesController = () => import('#controllers/invites_controller')
 
 router.get('/', async () => {
   return {
@@ -37,6 +38,15 @@ router.group(() => {
   router.post('/channels/:id/kick', [ChannelsController, 'kick'])
   router.post('/channels/:id/leave', [ChannelsController, 'leave'])
   router.get('/channels/:id/members', [ChannelsController, 'members'])
+})
+  .prefix('/api')
+  .use(middleware.auth())
+
+// Invites
+router.group(() => {
+  router.get('/invites', [InvitesController, 'index'])
+  router.post('/invites/:id/accept', [InvitesController, 'accept'])
+  router.post('/invites/:id/reject', [InvitesController, 'reject'])
 })
   .prefix('/api')
   .use(middleware.auth())
