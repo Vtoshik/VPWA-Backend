@@ -5,6 +5,7 @@ import Message from '#models/message'
 import Channel from '#models/channel'
 import User from '#models/user'
 import MentionedUser from '#models/mentioned_user'
+import Notification from '#models/notification'
 
 export default class ChatsController {
   // Helper function to extract @mentions from text
@@ -55,10 +56,8 @@ export default class ChatsController {
     const mentionedUserIds: number[] = []
 
     if (mentionedNicknames.length > 0) {
-      // Find users by nicknames
       const mentionedUsers = await User.query().whereIn('nickname', mentionedNicknames)
 
-      // Save mentions to database
       for (const mentionedUser of mentionedUsers) {
         await MentionedUser.create({
           messageId: message.id,
@@ -67,6 +66,9 @@ export default class ChatsController {
         mentionedUserIds.push(mentionedUser.id)
       }
     }
+
+    // Create notifications after mentions are processed
+    await this.createNotifications(channel, message, mentionedUserIds, user.id)
 
     channel.lastActivity = DateTime.now()
     await channel.save()
@@ -132,5 +134,48 @@ export default class ChatsController {
       data: serializedMessages,
       meta: messagesPagination.getMeta(),
     })
+  }
+
+  private async createNotifications(
+    channel: Channel,
+    message: Message,
+    mentionedUserIds: number[],
+    senderId: number
+  ) {
+    await channel.load('userChannels', (query) => {
+      query.preload('user')
+    })
+
+    const channelMembers = channel.userChannels
+
+    for (const userChannel of channelMembers) {
+      const member = userChannel.user
+
+      if (member.id === senderId) {
+        continue
+      }
+
+      if (member.notifyOnMentionOnly) {
+        if (mentionedUserIds.includes(member.id)) {
+          await Notification.create({
+            userId: member.id,
+            messageId: message.id,
+            channelId: channel.id,
+            type: 'mention',
+            isRead: false,
+          })
+        }
+      } else {
+        const notificationType = mentionedUserIds.includes(member.id) ? 'mention' : 'message'
+
+        await Notification.create({
+          userId: member.id,
+          messageId: message.id,
+          channelId: channel.id,
+          type: notificationType,
+          isRead: false,
+        })
+      }
+    }
   }
 }

@@ -3,10 +3,11 @@ import type { Server as HttpServer } from 'http'
 import User from '#models/user'
 import { createHash } from 'node:crypto'
 import ChannelCleanupService from './channel_cleanup_service.js'
+import Channel from '#models/channel'
 
 export default class SocketService {
   private io: SocketIOServer
-  private userSockets: Map<number, string> = new Map()
+  private userSockets: Map<number, Set<string>> = new Map()
   private cleanupService: ChannelCleanupService
 
   constructor(httpServer: HttpServer) {
@@ -96,7 +97,12 @@ export default class SocketService {
       const user = socket.data.user
       console.log(`User ${user.nickname} connected (socket: ${socket.id})`)
 
-      this.userSockets.set(user.id, socket.id)
+      // Add socket to user's set of connections
+      if (!this.userSockets.has(user.id)) {
+        this.userSockets.set(user.id, new Set())
+      }
+      this.userSockets.get(user.id)!.add(socket.id)
+
       this.handleChannelEvents(socket)
       this.handleMessageEvents(socket)
       this.handleTypingEvents(socket)
@@ -104,7 +110,14 @@ export default class SocketService {
 
       socket.on('disconnect', () => {
         console.log(`User ${user.nickname} disconnected`)
-        this.userSockets.delete(user.id)
+        const userSocketSet = this.userSockets.get(user.id)
+        if (userSocketSet) {
+          userSocketSet.delete(socket.id)
+          // Remove the set if empty
+          if (userSocketSet.size === 0) {
+            this.userSockets.delete(user.id)
+          }
+        }
       })
     })
   }
@@ -114,6 +127,13 @@ export default class SocketService {
 
     socket.on('channel:join', async (data: { channelId: number }) => {
       try {
+        // Validate channelId
+        if (!data.channelId || isNaN(data.channelId) || !Number.isInteger(data.channelId)) {
+          console.error(`${user.nickname} tried to join invalid channel:`, data.channelId)
+          socket.emit('error', { message: 'Invalid channel ID' })
+          return
+        }
+
         socket.join(`channel:${data.channelId}`)
         console.log(`${user.nickname} joined channel:${data.channelId}`)
 
@@ -123,12 +143,20 @@ export default class SocketService {
           channelId: data.channelId,
         })
       } catch (error) {
+        console.error('Error in channel:join:', error)
         socket.emit('error', { message: 'Failed to join channel' })
       }
     })
 
     socket.on('channel:leave', async (data: { channelId: number }) => {
       try {
+        // Validate channelId
+        if (!data.channelId || isNaN(data.channelId) || !Number.isInteger(data.channelId)) {
+          console.error(`${user.nickname} tried to leave invalid channel:`, data.channelId)
+          socket.emit('error', { message: 'Invalid channel ID' })
+          return
+        }
+
         socket.leave(`channel:${data.channelId}`)
         console.log(`${user.nickname} left channel:${data.channelId}`)
 
@@ -138,6 +166,7 @@ export default class SocketService {
           channelId: data.channelId,
         })
       } catch (error) {
+        console.error('Error in channel:leave:', error)
         socket.emit('error', { message: 'Failed to leave channel' })
       }
     })
@@ -196,16 +225,56 @@ export default class SocketService {
     })
   }
 
-  broadcastMessage(channelId: number, message: any) {
-    // Emit to everyone in the channel, including the sender
-    this.io.in(`channel:${channelId}`).emit('message:new', message)
+  async broadcastMessage(channelId: number, message: any) {
+    const channel = await Channel.query().where('id', channelId)
+      .preload('userChannels', (query) => {
+        query.preload('user')
+      }). first()
+
+    if (!channel) {
+      return
+    }
+
+    for (const userChannel of channel.userChannels) {
+      const member = userChannel.user
+      const socketIds = this.userSockets.get(member.id)
+
+      if (!socketIds || socketIds.size === 0) {
+        continue
+      }
+
+      if (member.status === 'offline') {
+        continue
+      }
+
+      if (member.status === 'dnd') {
+        const isMentioned = message.mentionedUserIds?.includes(member.id)
+
+        if (member.notifyOnMentionOnly && !isMentioned) {
+          continue
+        }
+
+        // Send to all user's connected sockets
+        socketIds.forEach((socketId) => {
+          this.io.to(socketId).emit('message:new:silent', message)
+        })
+        continue
+      }
+
+      // Send to all user's connected sockets
+      socketIds.forEach((socketId) => {
+        this.io.to(socketId).emit('message:new', message)
+      })
+    }
   }
 
   broadcastChannelCreated(channel: any, members: number[]) {
     members.forEach((userId) => {
-      const socketId = this.userSockets.get(userId)
-      if (socketId) {
-        this.io.to(socketId).emit('channel:created', channel)
+      const socketIds = this.userSockets.get(userId)
+      if (socketIds) {
+        socketIds.forEach((socketId) => {
+          this.io.to(socketId).emit('channel:created', channel)
+        })
       }
     })
   }
@@ -214,17 +283,37 @@ export default class SocketService {
     this.io.to(`channel:${channelId}`).emit('channel:deleted', { channelId })
   }
 
+  broadcastUserStatusChange(userId: number, status: string) {
+    this.io.emit('user:status-changed', {
+      userId,
+      status,
+    })
+  }
+
   sendInvite(userId: number, invite: any) {
-    const socketId = this.userSockets.get(userId)
-    if (socketId) {
-      this.io.to(socketId).emit('channel:invite', invite)
+    const socketIds = this.userSockets.get(userId)
+    if (socketIds) {
+      socketIds.forEach((socketId) => {
+        this.io.to(socketId).emit('channel:invite', invite)
+      })
     }
   }
 
   notifyKick(userId: number, data: any) {
-    const socketId = this.userSockets.get(userId)
-    if (socketId) {
-      this.io.to(socketId).emit('channel:kick', data)
+    const socketIds = this.userSockets.get(userId)
+    if (socketIds) {
+      socketIds.forEach((socketId) => {
+        this.io.to(socketId).emit('channel:kick', data)
+      })
+    }
+  }
+
+  notifyRevoke(userId: number, data: any) {
+    const socketIds = this.userSockets.get(userId)
+    if (socketIds) {
+      socketIds.forEach((socketId) => {
+        this.io.to(socketId).emit('channel:revoke', data)
+      })
     }
   }
 
