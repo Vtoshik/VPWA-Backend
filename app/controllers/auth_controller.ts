@@ -1,5 +1,6 @@
 import type { HttpContext } from '@adonisjs/core/http'
 import User from '#models/user'
+import Notification from '#models/notification'
 
 export default class AuthController {
   async register({ request, response }: HttpContext) {
@@ -45,15 +46,24 @@ export default class AuthController {
 
     try {
       const user = await User.verifyCredentials(email, password)
+      const wasOffline = user.status === 'offline'
       user.status = 'online'
-      await user.save()
 
+      await user.save()
       const token = await User.accessTokens.create(user)
+
+      let unreadNotificationsCount = 0
+      if (wasOffline) {
+        unreadNotificationsCount = await Notification.query()
+          .where('user_id', user.id).where('is_read', false)
+          .count('* as total').first().then((result) => result?.$extras.total || 0)
+      }
 
       return response.ok({
         message: 'User successfully logged in',
         user: user.serialize(),
         token: token.value!.release(),
+        unreadNotificationsCount,
       })
     } catch (error) {
       return response.unauthorized({ message: 'Invalid email or password' })

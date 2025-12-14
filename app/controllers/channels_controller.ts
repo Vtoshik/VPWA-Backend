@@ -37,7 +37,7 @@ export default class ChannelsController {
             const channel = await Channel.create({
                 name,
                 adminId: user.id,
-                isPrivate: isPrivate || false,
+                isPrivate: isPrivate ?? false,
                 lastActivity: DateTime.now(),
             })
 
@@ -46,6 +46,13 @@ export default class ChannelsController {
                 channelId: channel.id,
                 isSelected: true,
                 joinedAt: DateTime.now(),
+            })
+
+            console.log('Created channel:', {
+                id: channel.id,
+                name: channel.name,
+                isPrivate: channel.isPrivate,
+                serialized: channel.serialize()
             })
 
             const socketIO = getSocketIO()
@@ -76,7 +83,7 @@ export default class ChannelsController {
                 channel = await Channel.create({
                     name: finalChannelName,
                     adminId: user.id,
-                    isPrivate: isPrivate || false,
+                    isPrivate: isPrivate ?? false,
                     lastActivity: DateTime.now(),
                 })
 
@@ -85,6 +92,13 @@ export default class ChannelsController {
                     channelId: channel.id,
                     isSelected: true,
                     joinedAt: DateTime.now(),
+                })
+
+                console.log('Created channel via /join:', {
+                    id: channel.id,
+                    name: channel.name,
+                    isPrivate: channel.isPrivate,
+                    serialized: channel.serialize()
                 })
 
                 const socketIO = getSocketIO()
@@ -544,10 +558,10 @@ export default class ChannelsController {
             })
 
             const socketIO = getSocketIO()
-            socketIO.notifyKick(targetUserId, {
+            socketIO.notifyRevoke(targetUserId, {
                 channelId,
                 channelName: channel.name,
-                kickedBy: user.nickname
+                revokedBy: user.nickname
             })
 
             return response.ok({ message: 'User revoked from private channel' })

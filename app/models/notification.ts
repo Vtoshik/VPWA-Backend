@@ -3,6 +3,7 @@ import { BaseModel, column, belongsTo } from '@adonisjs/lucid/orm'
 import type { BelongsTo } from '@adonisjs/lucid/types/relations'
 import User from './user.js'
 import Message from './message.js'
+import Channel from './channel.js'
 
 export default class Notification extends BaseModel {
   @column({ isPrimary: true })
@@ -13,6 +14,9 @@ export default class Notification extends BaseModel {
 
   @column()
   declare messageId: number
+
+  @column()
+  declare channelId: number
 
   @column()
   declare type: string
@@ -28,4 +32,9 @@ export default class Notification extends BaseModel {
 
   @belongsTo(() => Message)
   declare message: BelongsTo<typeof Message>
+
+  @belongsTo(() => Channel, {
+    foreignKey: 'channelId',
+  })
+  declare channel: BelongsTo<typeof Channel>
 }
