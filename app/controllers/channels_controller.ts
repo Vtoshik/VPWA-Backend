@@ -322,11 +322,45 @@ export default class ChannelsController {
                 .first()
 
             if (ban) {
-                // Only admin can unban
+                // Only admin can unban and add user back to channel
                 if (channel.adminId === user.id) {
                     await ban.delete()
-                    // Don't send invite, admin is unbanning
-                    return response.ok({ message: 'User unbanned successfully' })
+
+                    // Add user back to the channel
+                    await UserChannel.create({
+                        userId: targetUserId,
+                        channelId,
+                        isSelected: false,
+                        joinedAt: DateTime.now(),
+                    })
+
+                    channel.lastActivity = DateTime.now()
+                    await channel.save()
+
+                    // Get target user for broadcast
+                    const targetUser = await User.find(targetUserId)
+
+                    const socketIO = getSocketIO()
+
+                    // Notify unbanned user
+                    socketIO.notifyUnban(targetUserId, {
+                        channelId,
+                        channelName: channel.name,
+                        unbannedBy: user.nickname
+                    })
+
+                    // Broadcast to all channel members that user was unbanned and rejoined
+                    socketIO.getIO().to(`channel:${channelId}`).emit('user:joined-channel', {
+                        userId: targetUserId,
+                        nickname: targetUser?.nickname,
+                        channelId,
+                        channelName: channel.name,
+                    })
+
+                    return response.ok({
+                        message: 'User unbanned and added back to channel',
+                        channel: channel.serialize()
+                    })
                 } else {
                     return response.forbidden({ message: 'User is banned from this channel' })
                 }
@@ -420,6 +454,8 @@ export default class ChannelsController {
 
             // Admin can kick immediately with permanent ban
             if (user.id === channel.adminId) {
+                const targetUser = await User.find(targetUserId)
+
                 await UserChannel.query()
                     .where('user_id', targetUserId)
                     .where('channel_id', channelId)
@@ -434,10 +470,20 @@ export default class ChannelsController {
                 })
 
                 const socketIO = getSocketIO()
+
+                // Notify kicked user
                 socketIO.notifyKick(targetUserId, {
                     channelId,
                     channelName: channel.name,
                     kickedBy: user.nickname
+                })
+
+                // Broadcast to remaining channel members
+                socketIO.getIO().to(`channel:${channelId}`).emit('user:left-channel', {
+                    userId: targetUserId,
+                    nickname: targetUser?.nickname,
+                    channelId,
+                    reason: 'kicked'
                 })
 
                 return response.ok({ message: 'User kicked permanently by admin' })
@@ -460,11 +506,14 @@ export default class ChannelsController {
                 return response.ok({ message: 'Vote registered (1/3)' })
             }
 
+            // bannedBy is now always an array thanks to the consume() method in Ban model
             if (!ban.bannedBy.includes(user.id)) {
                 ban.bannedBy = [...ban.bannedBy, user.id]
                 await ban.save()
 
                 if (ban.bannedBy.length >= 3) {
+                    const targetUser = await User.find(targetUserId)
+
                     await UserChannel.query()
                         .where('user_id', targetUserId)
                         .where('channel_id', channelId)
@@ -474,10 +523,20 @@ export default class ChannelsController {
                     await ban.save()
 
                     const socketIO = getSocketIO()
+
+                    // Notify kicked user
                     socketIO.notifyKick(targetUserId, {
                         channelId,
                         channelName: channel.name,
                         kickedBy: 'Community vote',
+                    })
+
+                    // Broadcast to remaining channel members
+                    socketIO.getIO().to(`channel:${channelId}`).emit('user:left-channel', {
+                        userId: targetUserId,
+                        nickname: targetUser?.nickname,
+                        channelId,
+                        reason: 'kicked'
                     })
 
                     return response.ok({ message: 'User kicked permanently by community vote' })
@@ -520,9 +579,10 @@ export default class ChannelsController {
 
             // Support both userId and nickname
             let targetUserId = userId
+            let targetUser = null
 
             if (!targetUserId && nickname) {
-                const targetUser = await User.query().where('nickname', nickname).first()
+                targetUser = await User.query().where('nickname', nickname).first()
                 if (!targetUser) {
                     return response.notFound({ message: 'User not found' })
                 }
@@ -531,6 +591,11 @@ export default class ChannelsController {
 
             if (!targetUserId) {
                 return response.badRequest({ message: 'Either userId or nickname is required' })
+            }
+
+            // Load target user if not already loaded
+            if (!targetUser) {
+                targetUser = await User.find(targetUserId)
             }
 
             // Cannot revoke yourself
@@ -558,10 +623,20 @@ export default class ChannelsController {
             })
 
             const socketIO = getSocketIO()
+
+            // Notify revoked user
             socketIO.notifyRevoke(targetUserId, {
                 channelId,
                 channelName: channel.name,
                 revokedBy: user.nickname
+            })
+
+            // Broadcast to remaining channel members
+            socketIO.getIO().to(`channel:${channelId}`).emit('user:left-channel', {
+                userId: targetUserId,
+                nickname: targetUser?.nickname,
+                channelId,
+                reason: 'revoked'
             })
 
             return response.ok({ message: 'User revoked from private channel' })

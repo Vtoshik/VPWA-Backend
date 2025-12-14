@@ -30,6 +30,12 @@ export default class ChatsController {
 
     const { channelId, text } = request.only(['channelId', 'text'])
 
+    // Validate channelId
+    if (!channelId || isNaN(Number(channelId))) {
+      console.error('sendMessage - Invalid channelId:', channelId, 'type:', typeof channelId)
+      return response.badRequest({ message: 'Invalid channel ID' })
+    }
+
     const channel = await Channel.query()
       .where('id', channelId)
       .preload('userChannels', (query) => {
@@ -94,6 +100,12 @@ export default class ChatsController {
     const channelId = params.id
     const page = request.input('page', 1)
     const limit = request.input('limit', 50)
+
+    // Validate channelId
+    if (!channelId || isNaN(Number(channelId))) {
+      console.error('getMessages - Invalid channelId:', channelId, 'type:', typeof channelId)
+      return response.badRequest({ message: 'Invalid channel ID' })
+    }
 
     const channel = await Channel.query()
       .where('id', channelId)

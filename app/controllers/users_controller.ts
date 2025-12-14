@@ -1,8 +1,6 @@
 import type { HttpContext } from "@adonisjs/core/http";
 import User from "#models/user";
 import { getSocketIO } from "#services/socket_provider";
-import { messages } from "@vinejs/vine/defaults";
-import { stat } from "fs";
 
 export default class UsersController {
     async updateStatus({ request, auth, response }: HttpContext) {

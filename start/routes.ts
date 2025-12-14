@@ -64,4 +64,5 @@ router.group(() => {
 // Admin (testing/debugging)
 router.group(() => {
   router.post('/admin/cleanup', [AdminController, 'triggerCleanup'])
+  router.post('/admin/create-old-channel', [AdminController, 'createOldChannel'])
 }).prefix('/api').use(middleware.auth())
