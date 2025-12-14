@@ -317,6 +317,15 @@ export default class SocketService {
     }
   }
 
+  notifyUnban(userId: number, data: any) {
+    const socketIds = this.userSockets.get(userId)
+    if (socketIds) {
+      socketIds.forEach((socketId) => {
+        this.io.to(socketId).emit('channel:unban', data)
+      })
+    }
+  }
+
   sendChannelMembers(socketId: string, members: any[]) {
     this.io.to(socketId).emit('channel:members', members)
   }

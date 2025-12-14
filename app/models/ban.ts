@@ -16,7 +16,22 @@ export default class Ban extends BaseModel {
 
   @column({
     prepare: (value: number[]) => JSON.stringify(value),
-    consume: (value: string) => JSON.parse(value),
+    consume: (value: string | number[]) => {
+      // If already an array, return as is
+      if (Array.isArray(value)) {
+        return value
+      }
+      // If it's a string, parse it
+      if (typeof value === 'string') {
+        return JSON.parse(value)
+      }
+      // If it's a single number, wrap in array
+      if (typeof value === 'number') {
+        return [value]
+      }
+      // Fallback to empty array
+      return []
+    },
   })
   declare bannedBy: number[]
 

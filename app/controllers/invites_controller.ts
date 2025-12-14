@@ -2,6 +2,7 @@ import type { HttpContext } from '@adonisjs/core/http'
 import Invite from '#models/invite'
 import UserChannel from '#models/user_channel'
 import { DateTime } from 'luxon'
+import { getSocketIO } from '#services/socket_provider'
 
 export default class InvitesController {
   async index({ auth, response }: HttpContext) {
@@ -37,6 +38,14 @@ export default class InvitesController {
     const inviteId = params.id
 
     try {
+      console.log('Accept invite - inviteId:', inviteId, 'type:', typeof inviteId)
+
+      // Validate inviteId
+      if (!inviteId || isNaN(Number(inviteId))) {
+        console.error('Invalid inviteId:', inviteId)
+        return response.badRequest({ message: 'Invalid invite ID' })
+      }
+
       const invite = await Invite.query()
         .where('id', inviteId)
         .where('to_user_id', user.id)
@@ -45,7 +54,21 @@ export default class InvitesController {
         .first()
 
       if (!invite) {
+        console.log('Invite not found for inviteId:', inviteId)
         return response.notFound({ message: 'Invite not found' })
+      }
+
+      console.log('Found invite:', {
+        id: invite.id,
+        channelId: invite.channelId,
+        channelIdType: typeof invite.channelId,
+        hasChannel: !!invite.channel,
+      })
+
+      // Validate channelId from database
+      if (!invite.channelId || isNaN(Number(invite.channelId))) {
+        console.error('Invalid channelId in invite:', invite.channelId)
+        return response.internalServerError({ message: 'Invalid channel data' })
       }
 
       const existingMember = await UserChannel.query().where('user_id', user.id)
@@ -78,6 +101,15 @@ export default class InvitesController {
 
       invite.channel.lastActivity = DateTime.now()
       await invite.channel.save()
+
+      // Broadcast to all channel members that a new user joined
+      const socketIO = getSocketIO()
+      socketIO.getIO().to(`channel:${invite.channelId}`).emit('user:joined-channel', {
+        userId: user.id,
+        nickname: user.nickname,
+        channelId: invite.channelId,
+        channelName: invite.channel.name,
+      })
 
       return response.ok({
         message: 'Invite accepted',
